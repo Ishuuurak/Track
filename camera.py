@@ -38,14 +38,38 @@ def main():
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--station", default="main")
     ap.add_argument("--calibrate", action="store_true")
+    ap.add_argument("--backend", default="", help="force MSMF, DSHOW or ANY")
     args = ap.parse_args()
 
-    cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)   # CAP_DSHOW works best on Windows
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    ok, frame = cap.read()
-    if not ok:
-        raise SystemExit("No camera frame. Is the Pocket 3 in Webcam mode and plugged in?")
+    # Try several Windows camera backends and a few warm-up reads. The Pocket 3 often
+    # shows black or a frozen frame with one backend but works with another.
+    cap, frame = None, None
+    for backend_name, backend in (("MSMF", cv2.CAP_MSMF), ("DSHOW", cv2.CAP_DSHOW), ("ANY", cv2.CAP_ANY)):
+        if args.backend and args.backend.upper() != backend_name:
+            continue
+        trial = cv2.VideoCapture(args.camera, backend)
+        if not trial.isOpened():
+            trial.release()
+            continue
+        if backend_name != "MSMF":
+            trial.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        trial.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        trial.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        good = None
+        for _ in range(40):                      # warm-up: first frames are often black
+            ok, f = trial.read()
+            if ok and f is not None and f.mean() > 5:
+                good = f
+                break
+            time.sleep(0.05)
+        if good is not None:
+            cap, frame = trial, good
+            print(f"Using camera {args.camera} with backend {backend_name}")
+            break
+        print(f"Backend {backend_name} gave only black frames, trying next...")
+        trial.release()
+    if cap is None:
+        raise SystemExit("No picture from this camera. Try --camera 1 or 3, or close other apps using the Pocket 3.")
 
     if args.calibrate or not os.path.exists(ZONE_FILE):
         zone = pick_zone(frame)
